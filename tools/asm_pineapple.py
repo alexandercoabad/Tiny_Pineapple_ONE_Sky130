@@ -8,12 +8,25 @@ for bit-banged SPI). JAL here is standard RISC-V semantics -- writes
 its return address ONLY to the encoded rd (unlike AgilA8's core,
 which hardwires JAL's link register to r7 regardless of rd -- no such
 quirk here, JAL(0, label) is a genuinely side-effect-free plain jump).
+
+Wraps every OP_IMM/OP_REG/branch/load/store/U-type instruction
+rv32i_core.v's ALU and decode actually implement -- confirmed against
+that file directly (its `alu_op` case statement and `branch_cond` case
+statement), not assumed. Earlier versions of this assembler only
+wrapped whichever handful of opcodes a given script happened to need
+at the time (ADD/OR/AND/XOR, ADDI/ANDI/ORI/SLLI/SRLI, BEQ/BNE/BLT,
+LW/LBU, SB/SW) -- SUB, the other register-register shifts (SLL/SRL/
+SRA), both SLT variants (register and immediate), XORI, SRAI, the
+other three branches (BGE/BLTU/BGEU), the other loads (LB/LH/LHU), SH,
+and LUI/AUIPC were all sitting unused in the core the entire time. No
+RTL work needed to add any of this -- the gap was purely that nobody
+had written the Python encoder for opcodes nothing had needed yet.
 """
 
 OPC = dict(
     OP_IMM=0b0010011, OP_REG=0b0110011, OP_LOAD=0b0000011,
     OP_STORE=0b0100011, OP_BRANCH=0b1100011, OP_JAL=0b1101111,
-    OP_JALR=0b1100111,
+    OP_JALR=0b1100111, OP_LUI=0b0110111, OP_AUIPC=0b0010111,
 )
 
 
@@ -54,21 +67,45 @@ class Asm:
         return (funct7 << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode
 
     def ADD(self, rd, rs1, rs2): self.emit(self._r(0, rs2, rs1, 0b000, rd, OPC['OP_REG']))
+    def SUB(self, rd, rs1, rs2): self.emit(self._r(0x20, rs2, rs1, 0b000, rd, OPC['OP_REG']))
+    def SLL(self, rd, rs1, rs2): self.emit(self._r(0, rs2, rs1, 0b001, rd, OPC['OP_REG']))
+    def SLT(self, rd, rs1, rs2): self.emit(self._r(0, rs2, rs1, 0b010, rd, OPC['OP_REG']))
+    def SLTU(self, rd, rs1, rs2): self.emit(self._r(0, rs2, rs1, 0b011, rd, OPC['OP_REG']))
+    def XOR(self, rd, rs1, rs2): self.emit(self._r(0, rs2, rs1, 0b100, rd, OPC['OP_REG']))
+    def SRL(self, rd, rs1, rs2): self.emit(self._r(0, rs2, rs1, 0b101, rd, OPC['OP_REG']))
+    def SRA(self, rd, rs1, rs2): self.emit(self._r(0x20, rs2, rs1, 0b101, rd, OPC['OP_REG']))
     def OR(self, rd, rs1, rs2):  self.emit(self._r(0, rs2, rs1, 0b110, rd, OPC['OP_REG']))
     def AND(self, rd, rs1, rs2): self.emit(self._r(0, rs2, rs1, 0b111, rd, OPC['OP_REG']))
-    def XOR(self, rd, rs1, rs2): self.emit(self._r(0, rs2, rs1, 0b100, rd, OPC['OP_REG']))
 
     def _i(self, imm, rs1, funct3, rd, opcode):
         return (_s12(imm) << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode
 
     def ADDI(self, rd, rs1, imm): self.emit(self._i(imm, rs1, 0b000, rd, OPC['OP_IMM']))
+    def SLTI(self, rd, rs1, imm): self.emit(self._i(imm, rs1, 0b010, rd, OPC['OP_IMM']))
+    def SLTIU(self, rd, rs1, imm): self.emit(self._i(imm, rs1, 0b011, rd, OPC['OP_IMM']))
+    def XORI(self, rd, rs1, imm): self.emit(self._i(imm, rs1, 0b100, rd, OPC['OP_IMM']))
     def ANDI(self, rd, rs1, imm): self.emit(self._i(imm, rs1, 0b111, rd, OPC['OP_IMM']))
     def ORI(self, rd, rs1, imm):  self.emit(self._i(imm, rs1, 0b110, rd, OPC['OP_IMM']))
     def SLLI(self, rd, rs1, sh):  self.emit(self._i(sh & 0x1F, rs1, 0b001, rd, OPC['OP_IMM']))
     def SRLI(self, rd, rs1, sh):  self.emit(self._i(sh & 0x1F, rs1, 0b101, rd, OPC['OP_IMM']))
+    # SRAI reuses SRLI's funct3 (101); the ALU picks arithmetic vs
+    # logical purely off imm[10] (funct7's bit 5) -- see rv32i_core.v's
+    # `funct7_b5` -- so the encoding here is identical to SRLI's except
+    # for that one extra bit (0x400) folded into the immediate field.
+    def SRAI(self, rd, rs1, sh):  self.emit(self._i(0x400 | (sh & 0x1F), rs1, 0b101, rd, OPC['OP_IMM']))
+    def LB(self, rd, rs1, imm):   self.emit(self._i(imm, rs1, 0b000, rd, OPC['OP_LOAD']))
+    def LH(self, rd, rs1, imm):   self.emit(self._i(imm, rs1, 0b001, rd, OPC['OP_LOAD']))
     def LW(self, rd, rs1, imm):   self.emit(self._i(imm, rs1, 0b010, rd, OPC['OP_LOAD']))
     def LBU(self, rd, rs1, imm):  self.emit(self._i(imm, rs1, 0b100, rd, OPC['OP_LOAD']))
+    def LHU(self, rd, rs1, imm):  self.emit(self._i(imm, rs1, 0b101, rd, OPC['OP_LOAD']))
     def JALR(self, rd, rs1, imm): self.emit(self._i(imm, rs1, 0b000, rd, OPC['OP_JALR']))
+
+    # ---- U-type (LUI/AUIPC) ----
+    def _u(self, imm20, rd, opcode):
+        return ((imm20 & 0xFFFFF) << 12) | (rd << 7) | opcode
+
+    def LUI(self, rd, imm20):   self.emit(self._u(imm20, rd, OPC['OP_LUI']))
+    def AUIPC(self, rd, imm20): self.emit(self._u(imm20, rd, OPC['OP_AUIPC']))
 
     def SB(self, rs2, rs1, imm):
         imm = _s12(imm)
@@ -80,12 +117,20 @@ class Asm:
         w = ((imm >> 5) << 25) | (rs2 << 20) | (rs1 << 15) | (0b010 << 12) | ((imm & 0x1F) << 7) | OPC['OP_STORE']
         self.emit(w)
 
+    def SH(self, rs2, rs1, imm):
+        imm = _s12(imm)
+        w = ((imm >> 5) << 25) | (rs2 << 20) | (rs1 << 15) | (0b001 << 12) | ((imm & 0x1F) << 7) | OPC['OP_STORE']
+        self.emit(w)
+
     def _branch(self, funct3, rs1, rs2, target):
         self.emit(None, fixup=('branch', funct3, rs1, rs2, target))
 
-    def BEQ(self, rs1, rs2, target): self._branch(0b000, rs1, rs2, target)
-    def BNE(self, rs1, rs2, target): self._branch(0b001, rs1, rs2, target)
-    def BLT(self, rs1, rs2, target): self._branch(0b100, rs1, rs2, target)
+    def BEQ(self, rs1, rs2, target):  self._branch(0b000, rs1, rs2, target)
+    def BNE(self, rs1, rs2, target):  self._branch(0b001, rs1, rs2, target)
+    def BLT(self, rs1, rs2, target):  self._branch(0b100, rs1, rs2, target)
+    def BGE(self, rs1, rs2, target):  self._branch(0b101, rs1, rs2, target)
+    def BLTU(self, rs1, rs2, target): self._branch(0b110, rs1, rs2, target)
+    def BGEU(self, rs1, rs2, target): self._branch(0b111, rs1, rs2, target)
 
     def JAL(self, rd, target):
         self.emit(None, fixup=('jal', rd, target))

@@ -70,4 +70,6 @@ standalone-tests:
 	vvp /tmp/tt_tb_ps2_reader.vvp | tee /tmp/tt_out_ps2_reader.log
 	iverilog -g2012 -I $(SRC_DIR) -o /tmp/tt_tb_ps2_ascii.vvp $(SRC_DIR)/tt_um_pineapple_one.v $(SRC_DIR)/rv32i_core.v $(SRC_DIR)/mem.v $(SRC_DIR)/qspi_shared_engine.v spi_ram_model.v tb_ps2_ascii.v
 	vvp /tmp/tt_tb_ps2_ascii.vvp | tee /tmp/tt_out_ps2_ascii.log
+	iverilog -g2012 -I $(SRC_DIR) -o /tmp/tt_tb_alu_test.vvp $(SRC_DIR)/rv32i_core.v alu_test_mem.v tb_alu_test.v
+	vvp /tmp/tt_tb_alu_test.vvp | tee /tmp/tt_out_alu_test.log
 	@! grep -l "FAIL" /tmp/tt_out_*.log

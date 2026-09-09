@@ -34,12 +34,13 @@ This will generate `tb.vcd` instead of `tb.fst`.
 
 ## Additional standalone testbenches
 
-Nine extra testbenches cover the QSPI external-memory addition, the
+Ten extra testbenches cover the QSPI external-memory addition, the
 reprogrammable boot ROM (self-test + demo/listen loop + bootloader),
 the FLASH_MODE handoff to external flash, FLASH_PAGE bank-switched
-flash execution, a real ST7789 LCD driver built on top of it, and a
-PS/2 keyboard reader (raw scancodes, then scancode-to-ASCII
-translation) built the same way. They're plain Icarus testbenches, not
+flash execution, a real ST7789 LCD driver built on top of it, a PS/2
+keyboard reader (raw scancodes, then scancode-to-ASCII translation)
+built the same way, and a standalone ALU/instruction-encoding check for
+`tools/asm_pineapple.py` itself. They're plain Icarus testbenches, not
 cocotb, so they don't run as part of `make` above -- run them together
 with:
 
@@ -105,6 +106,18 @@ iverilog -g2012 -I ../src -o /tmp/tb8.vvp ../src/tt_um_pineapple_one.v ../src/rv
 # EMIT_PAGE's own page number and re-emitted a stale ASCII value from
 # the previous real translation instead of 0x00)
 iverilog -g2012 -I ../src -o /tmp/tb9.vvp ../src/tt_um_pineapple_one.v ../src/rv32i_core.v ../src/mem.v ../src/qspi_shared_engine.v spi_ram_model.v tb_ps2_ascii.v && vvp /tmp/tb9.vvp
+
+# tools/asm_pineapple.py instruction-encoding check: every opcode added
+# beyond the original handful (SUB, SLL/SRL/SRA, SLT/SLTU, SLTI/SLTIU,
+# XORI, SRAI, LB/LH/LHU, SH, BGE/BLTU/BGEU, LUI/AUIPC) run through the
+# real rv32i_core (against a minimal flat ROM+RAM harness, not mem.v --
+# nothing here needs the external-QSPI machinery) and checked against
+# hand-computed expected register values. Test inputs are deliberately
+# chosen so signed/unsigned and logical/arithmetic variants of the same
+# opcode pair disagree on the given value (-1 == 0xFFFFFFFF throughout)
+# -- a wrapper with the wrong funct3/funct7 is expected to fail loudly
+# here, not coincidentally pass.
+iverilog -g2012 -I ../src -o /tmp/tb10.vvp ../src/rv32i_core.v alu_test_mem.v tb_alu_test.v && vvp /tmp/tb10.vvp
 ```
 
 None of these has been checked against a real flash/PSRAM chip or a
