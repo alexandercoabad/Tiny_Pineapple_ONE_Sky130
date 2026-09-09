@@ -41,6 +41,13 @@
 //                   also the bootloader's DATA/CLOCK/START input)
 //   0xF8        : FLASH_MODE (memory-mapped, write-only, write-any-value-
 //                   to-set -- see "Reprogrammability" below)
+//   0xFC        : FLASH_PAGE (memory-mapped, read/write, resets to 0) --
+//                   selects which WINDOW_BYTES-sized slice of the flash
+//                   chip's own larger address space the LOAD_BASE window
+//                   currently maps to. See "Bank-switched flash
+//                   execution" further down for what this is for and why
+//                   it needs care to use correctly -- don't write it from
+//                   hand-assembled code without reading that section.
 //
 // Word accesses (LW/SW) must be 4-byte aligned. Byte/half accesses
 // (LB/LH/SB/SH) are supported at any address within a region, including
@@ -230,8 +237,20 @@ module mem #(
     // FLASH_MODE: write-any-value-to-set, no readback, sticky until
     // reset. Never touched by the boot ROM itself -- opt-in for
     // whatever gets bootloaded (see header).
+    //
+    // FLASH_PAGE: 8-bit page number, write-any-value-SETS-it (unlike
+    // FLASH_MODE, the actual written value matters here), readable,
+    // resets to 0, sticky until changed or reset. Selects which
+    // WINDOW_BYTES-sized slice of the flash chip's own (much larger)
+    // address space the fixed LOAD_BASE-sized chip-address window
+    // currently maps to -- see "Bank-switched flash execution" below
+    // for why this exists and how a program actually uses it. Reset
+    // value 0 means an un-paged program (one that never touches
+    // FLASH_PAGE) sees exactly the same page-0-only behavior as
+    // before this register existed -- fully backward compatible.
     // ---------------------------------------------------------------
-    reg flash_mode;
+    reg       flash_mode;
+    reg [7:0] flash_page;
 
     wire in_rom        = (addr < ROM_BYTES);
     wire in_ram_range  = (addr >= RAM_BASE) && (addr < (RAM_BASE + RAM_BYTES));
@@ -268,7 +287,47 @@ module mem #(
     wire in_ext       = in_ext_flash || in_ext_psram;
 
     wire [1:0]  req_dev  = in_ext_flash ? 2'd1 : 2'd2;               // 1=flash(CS0) 2=psram(CS1)
-    wire [23:0] ext_addr = in_ext_flash ? {16'h0, (addr - LOAD_BASE)} : {16'h0, (addr - EXT_PSRAM_BASE)};
+
+    // ---------------------------------------------------------------
+    // Bank-switched flash execution
+    // ---------------------------------------------------------------
+    // The chip-address window that FLASH_MODE redirects is fixed --
+    // LOAD_BASE through (RAM_BASE+RAM_BYTES-1), WINDOW_BYTES wide --
+    // and always will be; that's baked into the 8-bit unified address
+    // bus and isn't changing. But the flash CHIP behind it has its own
+    // much larger 24-bit address space, and FLASH_PAGE lets a running
+    // program pick which WINDOW_BYTES-sized slice of *that* currently
+    // shows up at the fixed chip-address window: ext_addr becomes
+    // flash_page*WINDOW_BYTES + (addr-LOAD_BASE) instead of just
+    // (addr-LOAD_BASE). WINDOW_BYTES*256 pages = up to ~11KB of flash
+    // reachable this way with an 8-bit page register, comfortably past
+    // what a single 44-byte window could ever run on its own.
+    //
+    // This does NOT make flash a flat linear address space the CPU can
+    // just walk through, though -- switching pages only changes what's
+    // fetched from the SAME fixed chip addresses going forward; PC
+    // still physically increments through LOAD_BASE..(RAM_BASE+
+    // RAM_BYTES-1) and then off the end into the PSRAM window
+    // regardless of FLASH_PAGE. A page-switch has to end with an
+    // explicit jump back to LOAD_BASE, not just fall through -- and
+    // that jump runs into the exact same same-cycle-redirect hazard
+    // documented in tools/build_flash_handoff_stub.py's "Why flash
+    // byte 0 is dead": FLASH_PAGE takes effect for the very next
+    // fetch, which is wherever in the (now new) page the jump
+    // instruction itself happens to be sitting -- not fetched from
+    // where the programmer wrote it in the OLD page. tools/
+    // asm_pineapple.py's PagedAsm handles this by reserving the
+    // window's last word as an identical "JAL LOAD_BASE" in every
+    // single page, so it doesn't matter which page's copy of that word
+    // actually ends up executing after a switch -- see that class's
+    // own docstring for the full page layout. Don't hand-roll paged
+    // flash programs without it.
+    localparam WINDOW_BYTES = (RAM_BASE + RAM_BYTES) - LOAD_BASE;
+
+    wire [23:0] flash_page_base = flash_page * WINDOW_BYTES; // constant multiply, synthesizes as a couple of adders
+    wire [23:0] ext_addr = in_ext_flash
+        ? (flash_page_base + {16'h0, (addr - LOAD_BASE)})
+        : {16'h0, (addr - EXT_PSRAM_BASE)};
 
     // Flash is read-only from this port -- real NOR flash needs an
     // erase/program sequence a plain 0x02 command can't provide, so
@@ -318,6 +377,8 @@ module mem #(
             rdata = {24'b0, gpio_out};
         end else if (addr == 8'hF4) begin
             rdata = {24'b0, gpio_in};
+        end else if (addr == 8'hFC) begin
+            rdata = {24'b0, flash_page};
         end else begin
             rdata = 32'h0;
         end
@@ -330,6 +391,7 @@ module mem #(
         if (!rst_n) begin
             gpio_out   <= 8'h00;
             flash_mode <= 1'b0;
+            flash_page <= 8'h00;
         end else if (we) begin
             if (in_ram_range && !in_ext_flash) begin
                 case (size)
@@ -352,6 +414,8 @@ module mem #(
                 gpio_out <= wdata[7:0];
             end else if (addr == 8'hF8) begin
                 flash_mode <= 1'b1;   // write-any-value-to-set, sticky until reset
+            end else if (addr == 8'hFC) begin
+                flash_page <= wdata[7:0];   // the written value IS the new page, unlike FLASH_MODE
             end
         end
     end

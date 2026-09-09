@@ -65,6 +65,8 @@ smaller 256-byte address space:
   also the bootloader's DATA/CLOCK/START input, see below.
 - `0xF8`: memory-mapped **FLASH_MODE register**, write-only,
   write-any-value-to-set. See "Reprogrammability" below.
+- `0xFC`: memory-mapped **FLASH_PAGE register**, read/write, resets to
+  0. See "Bank-switched flash execution" below.
 
 ### What the boot ROM does
 
@@ -140,19 +142,84 @@ happens to be unreachable. This is exercised end-to-end in
 `test/tb_flash_handoff.v` -- confirmed empirically both ways (the
 2-instruction version really does misfire) while developing that test.
 
+#### Bank-switched flash execution (FLASH_PAGE)
+
+The `LOAD_BASE-0xDF` window FLASH_MODE redirects is fixed at
+`WINDOW_BYTES` (44 bytes / 11 instructions) -- that's baked into the
+chip's own 8-bit unified address bus and isn't changing, but a real
+flash chip's own address space is much bigger than that. `FLASH_PAGE`
+(`0xFC`, read/write, resets to 0) lets a *running* program pick which
+`WINDOW_BYTES`-sized slice of the flash chip currently shows up at that
+fixed chip-address window: `ext_addr` becomes
+`flash_page*WINDOW_BYTES + (addr-LOAD_BASE)` instead of just
+`addr-LOAD_BASE`. An 8-bit page register reaches up to ~11KB of flash
+this way -- comfortably past what the 44-byte window could ever run on
+its own, and enough for the ST7789 driver below.
+
+This doesn't turn flash into a flat address space the CPU can just walk
+through, though: switching pages only changes what's *fetched* from the
+same fixed chip addresses going forward, not the address range itself.
+`PC` still physically increments through `LOAD_BASE..0xDF` and then off
+the end into the PSRAM window regardless of `FLASH_PAGE` -- a page
+switch has to end with an explicit jump back to `LOAD_BASE`, and that
+jump runs into the *exact same* same-cycle-redirect hazard as the
+handoff stub above, just repeating at every page boundary instead of
+once: `FLASH_PAGE` takes effect for the very next fetch, which is
+wherever in the (now new) page the jump instruction happens to be
+sitting, not where the programmer wrote it in the old page.
+
+`tools/asm_pineapple.py`'s `PagedAsm` class handles this by reserving
+each page's last two instruction slots as an identical `SW
+<next_page>,FLASH_PAGE(x0)` followed by an identical `JAL x0,LOAD_BASE`
+trampoline, present byte-for-byte the same in *every* page -- so it
+doesn't matter which page's copy of the trampoline actually ends up
+executing after a switch. That leaves 8 usable instructions per page
+(7 for page 0, since its own byte 0 is dead per the handoff stub
+section above). `switch_to(page_num)` covers a compile-time-constant
+target; `switch_to_computed()` covers a runtime-decided one (e.g. a
+loop counter deciding "one more pass" vs "done") -- see that class's
+own docstring for the convergent-branch requirement the latter depends
+on. This is exercised end-to-end in `test/tb_flash_paging.v` against a
+hand-built 4-page image (`tools/build_flash_pagetest.py`) that
+exercises both.
+
 #### Driving an ST7789 display from flash
 
 `tools/build_st7789_flash_image.py` assembles a small ST7789 LCD driver
 (SWRESET/SLPOUT/COLMOD/MADCTL/CASET/RASET/DISPON, then fills the
 configured window with a solid color) meant to be pre-programmed onto
-the external flash chip and reached via the handoff stub above -- at
-364 bytes it's far too big for the 44-byte bootload window itself.
-Since this core has no dedicated SPI peripheral (unlike a hardware CS2
+the external flash chip and reached via the handoff stub above. Since
+this core has no dedicated SPI peripheral (unlike a hardware CS2
 engine), the driver bit-bangs SPI over `GPIO_OUT` directly (`uo_out[0]`
 =SCK, `uo_out[1]`=MOSI, `uo_out[2]`=DC, `uo_out[3]`=CS, held low for the
-program's entire lifetime). See that file's own docstring for the exact
-wiring and timing assumptions, and `tools/asm_pineapple.py` for the
-small RV32I assembler both this and the boot ROM builder share.
+program's entire lifetime).
+
+This driver is built entirely on `PagedAsm` (above), not a flat
+`Asm()` program -- an earlier version used a flat program and silently
+did not work: the driver's SPI byte-send routine alone (14
+instructions) is already bigger than the single 44-byte window, so PC
+would walk off the end into the PSRAM window mid-routine and start
+executing wrong instructions, not fail cleanly. Nothing had exercised
+bank-switching with a program that size before, so this went unnoticed
+until it was actually simulated end-to-end (`test/tb_st7789_driver.v`,
+which reconstructs the actual bit-banged SPI byte stream from
+`GPIO_OUT` and checks it against the exact expected init sequence).
+
+Two page-friendly patterns make this work: every byte this driver ever
+sends is a compile-time Python constant, so each *bit* becomes its own
+tiny page (a trivial ADDI+SW/ADDI+SW, no runtime shift register or bit
+counter needed) rather than a callable subroutine -- there's no
+"return to caller's page" concept `FLASH_PAGE` supports, so a
+subroutine living in one page can't be `JAL`'d into from a different
+page the way the old flat version's `SEND_BYTE` was. And the pixel
+fill -- which can't afford one page per bit at real panel sizes, tens
+of MB of flash for a single color -- is a small fixed ring of pages (16
+bit-send pages + 1 control page) built *once* and reused per pixel via
+`switch_to_computed()`, since every pixel sends the identical color
+bytes; only the pixel counter's starting value scales with panel size,
+not the flash image itself. See that file's own docstring for the full
+design, and `tools/asm_pineapple.py` for the small RV32I assembler both
+this and the boot ROM builder share.
 
 ## How to test
 
@@ -173,7 +240,7 @@ gets bootloaded into it), edit `tools/build_boot_rom.py` and re-run it
 to regenerate `src/boot_rom_body.vh`, which `src/mem.v` `` `include``s
 directly -- don't hand-edit that file.
 
-Six test suites cover different parts of this design (see `test/`):
+Eight test suites cover different parts of this design (see `test/`):
 `test.py` (cocotb) drives the real top-level module end-to-end --
 self-test pass/fail with and without a simulated QSPI slave, the demo
 counter, and a full bootload-and-run of a small program; `tb_check.v`
@@ -189,12 +256,21 @@ instructions (`mem_extmem_test.v` swaps in a small test program in
 place of the boot ROM) against that same external window, confirming
 the address decode, wait-state handshake, QSPI engine, and byte
 ordering all work together when driven by the CPU itself rather than a
-testbench standing in for it; and `tb_flash_handoff.v` bootloads
+testbench standing in for it; `tb_flash_handoff.v` bootloads
 `tools/build_flash_handoff_stub.py`'s stub over the real DATA/CLOCK/
 START protocol with both a flash (CS0) and PSRAM (CS1) model attached
 at once, and confirms execution actually continues from the right
 external flash byte afterward -- see "The FLASH_MODE handoff stub, and
-why flash byte 0 is dead" above for what this caught.
+why flash byte 0 is dead" above for what this caught; `tb_flash_paging.v`
+bootloads the same stub, then walks a hand-built 4-page flash image
+through both `switch_to()` and `switch_to_computed()`, confirming
+`GPIO_OUT` visits every page's distinct value in the right order,
+including a self-loop; and `tb_st7789_driver.v` runs the real
+`PagedAsm`-based ST7789 driver against a simulation-scaled panel and
+reconstructs the actual bit-banged SPI byte stream to check it against
+the exact expected init sequence -- see "Driving an ST7789 display
+from flash" above for what this caught (a flat, non-paged version of
+this same driver that silently ran off the end of the flash window).
 
 **Known limitation:** the external RAM/flash windows have only been
 validated against the behavioral model in `spi_ram_model.v`, not a real

@@ -17,9 +17,16 @@ module spi_ram_model (
     output reg  miso
 );
 
-    reg [7:0] mem [0:255]; // small model memory -- plenty for these tests
+    // 13-bit addressing (8192 bytes) -- comfortably covers real flash
+    // images built through PagedAsm (e.g. the ST7789 driver's ~7.3KB
+    // simulation-sized image), not just the small hand-written test
+    // programs the original 256-byte model was sized for. Only the
+    // low bits of `addr` actually get indexed either way (real flash
+    // chips are much bigger than either size), so widening this is a
+    // pure capacity change, not a protocol change.
+    reg [7:0] mem [0:8191];
     integer i;
-    initial for (i = 0; i < 256; i = i + 1) mem[i] = 8'h00;
+    initial for (i = 0; i < 8192; i = i + 1) mem[i] = 8'h00;
 
     reg [2:0]  bitcnt;
     reg [1:0]  phase;      // 0=cmd, 1=addr, 2=data
@@ -28,6 +35,14 @@ module spi_ram_model (
     reg        we;
     reg [7:0]  shift_in;
     reg [7:0]  cur_out;
+
+    // Combinational view of what `addr` is ABOUT to become once this
+    // cycle's nonblocking assign to it lands -- needed so the very
+    // same cycle that finishes shifting in the 3rd address byte can
+    // already index `mem[]` with the complete address instead of a
+    // one-byte-stale one (the actual `addr <=` update is nonblocking
+    // and only visible starting next cycle).
+    wire [23:0] next_addr = {addr[15:0], shift_in[6:0], mosi};
 
     localparam PHASE_CMD  = 2'd0;
     localparam PHASE_ADDR = 2'd1;
@@ -51,17 +66,17 @@ module spi_ram_model (
                         phase <= PHASE_ADDR;
                     end
                     PHASE_ADDR: begin
-                        addr <= {addr[15:0], shift_in[6:0], mosi};
+                        addr <= next_addr;
                         if (addr_byte == 2'd2) begin
                             phase   <= PHASE_DATA;
-                            cur_out <= mem[{shift_in[6:0], mosi}]; // low byte of the address just formed (already 8 bits)
+                            cur_out <= mem[next_addr[12:0]]; // low 13 bits of the address just formed
                         end
                         addr_byte <= addr_byte + 2'd1;
                     end
                     default: begin // PHASE_DATA
-                        if (we) mem[addr[7:0]] <= {shift_in[6:0], mosi};
+                        if (we) mem[addr[12:0]] <= {shift_in[6:0], mosi};
                         addr    <= addr + 24'd1;
-                        cur_out <= mem[addr[7:0] + 8'd1];
+                        cur_out <= mem[addr[12:0] + 13'd1];
                     end
                 endcase
             end else begin

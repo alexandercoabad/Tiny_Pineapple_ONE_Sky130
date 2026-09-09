@@ -34,10 +34,12 @@ This will generate `tb.vcd` instead of `tb.fst`.
 
 ## Additional standalone testbenches
 
-Four extra testbenches cover the QSPI external-memory addition and the
-reprogrammable boot ROM (self-test + demo/listen loop + bootloader).
-They're plain Icarus testbenches, not cocotb, so they don't run as part
-of `make` above -- run them together with:
+Seven extra testbenches cover the QSPI external-memory addition, the
+reprogrammable boot ROM (self-test + demo/listen loop + bootloader),
+the FLASH_MODE handoff to external flash, FLASH_PAGE bank-switched
+flash execution, and a real ST7789 LCD driver built on top of it.
+They're plain Icarus testbenches, not cocotb, so they don't run as
+part of `make` above -- run them together with:
 
 ```sh
 make standalone-tests
@@ -61,23 +63,34 @@ iverilog -g2012 -I ../src -o /tmp/tb3.vvp ../src/rv32i_core.v ../src/qspi_shared
 # Full top-level test: self-test fail/pass (with and without a simulated QSPI
 # slave) and a full bootload-and-run, all against the real tt_um_pineapple_one
 iverilog -g2012 -I ../src -o /tmp/tb4.vvp ../src/tt_um_pineapple_one.v ../src/rv32i_core.v ../src/mem.v ../src/qspi_shared_engine.v spi_ram_model.v tb_check.v && vvp /tmp/tb4.vvp
+
+# FLASH_MODE handoff: bootload the 1-instruction stub, confirm execution
+# actually continues from the correct external flash byte afterward
+iverilog -g2012 -I ../src -o /tmp/tb5.vvp ../src/tt_um_pineapple_one.v ../src/rv32i_core.v ../src/mem.v ../src/qspi_shared_engine.v spi_ram_model.v tb_flash_handoff.v && vvp /tmp/tb5.vvp
+
+# FLASH_PAGE bank-switching: a 4-page flash image (built by
+# tools/build_flash_pagetest.py) exercises both switch_to() (a
+# compile-time-constant page target) and switch_to_computed() (a
+# runtime-decided one, via a self-loop), confirming GPIO_OUT visits
+# every page's value in the right order
+iverilog -g2012 -I ../src -o /tmp/tb6.vvp ../src/tt_um_pineapple_one.v ../src/rv32i_core.v ../src/mem.v ../src/qspi_shared_engine.v spi_ram_model.v tb_flash_paging.v && vvp /tmp/tb6.vvp
+
+# Real ST7789 LCD driver (tools/build_st7789_flash_image.py), simulation-sized:
+# reconstructs the actual bit-banged SPI byte stream from GPIO_OUT and checks
+# it against st7789_expected_seq.hex (regenerate that if the driver's init
+# sequence or FILL_COLOR/panel constants change)
+iverilog -g2012 -I ../src -o /tmp/tb7.vvp ../src/tt_um_pineapple_one.v ../src/rv32i_core.v ../src/mem.v ../src/qspi_shared_engine.v spi_ram_model.v tb_st7789_driver.v && vvp /tmp/tb7.vvp
 ```
 
 None of these has been checked against a real flash/PSRAM chip or a
 vendor-accurate behavioral model -- see `docs/info.md`'s "Known
 limitation" note.
 
-Separately, `test.py` (run via plain `make`) includes two cocotb tests
-(`test_selftest_passes_with_pmod`, `test_selftest_passes_again_after_soft_reset`)
-that drive a *Python* behavioral QSPI slave instead of the Verilog one
-above; as of this writing those two currently fail in simulation even
-though the equivalent Verilog-driven scenario in `tb_check.v` passes --
-this looks like a one-clock-cycle sampling lag specific to that Python
-coroutine's `RisingEdge`-polled bit-bang (it reacts to an SCK edge one
-system-clock cycle later than the Verilog `negedge sck`-triggered model
-does), not a bug in the design itself. Worth fixing in `test.py`, but
-left as-is here since the RTL-level correctness is already covered by
-`tb_check.v` and the other three tests above.
+All 11 cocotb tests (run via plain `make`) currently pass, including
+`test_selftest_passes_with_pmod` and
+`test_selftest_passes_again_after_soft_reset`, which drive a *Python*
+behavioral QSPI slave rather than the Verilog one the standalone
+testbenches above use.
 
 ## How to view the waveform file
 

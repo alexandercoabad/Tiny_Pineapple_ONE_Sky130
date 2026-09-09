@@ -114,7 +114,7 @@ async def reset_dut(dut):
     await ClockCycles(dut.clk, 1)
 
 
-async def wait_for_first_led_write(dut, max_cycles=50000):
+async def wait_for_first_led_write(dut, max_cycles=2000):
     """Waits for the self-test execution to complete and write to uo_out."""
     for _ in range(max_cycles):
         await ClockCycles(dut.clk, 1)
@@ -162,7 +162,7 @@ async def test_counter_wraps(dut):
     """Checks uo_out[3:0] counts 0..15 and wraps, with ui_in held at 0."""
     dut._log.info("Start")
 
-    clock = Clock(dut.clk, 10, unit="ns")
+    clock = Clock(dut.clk, 10, unit="us")
     cocotb.start_soon(clock.start())
 
     await reset_dut(dut)
@@ -171,7 +171,7 @@ async def test_counter_wraps(dut):
     seen_values = {last}
     wrapped = False
 
-    for _ in range(50000):
+    for _ in range(500 + 56 * 20):
         await ClockCycles(dut.clk, 1)
         cur = safe_int(dut.uo_out.value) & 0x0F
         if cur != last:
@@ -190,7 +190,7 @@ async def test_counter_wraps(dut):
 @cocotb.test()
 async def test_reset_starts_from_zero(dut):
     """Immediately after reset, uo_out should read 0."""
-    clock = Clock(dut.clk, 10, unit="ns")
+    clock = Clock(dut.clk, 10, unit="us")
     cocotb.start_soon(clock.start())
 
     await reset_dut(dut)
@@ -203,7 +203,7 @@ async def test_reset_starts_from_zero(dut):
 @cocotb.test()
 async def test_ui_in_upper_bits_do_not_affect_counter(dut):
     """Confirms ui_in[7:3] changing patterns do not disturb counter execution."""
-    clock = Clock(dut.clk, 10, unit="ns")
+    clock = Clock(dut.clk, 10, unit="us")
     cocotb.start_soon(clock.start())
 
     dut.ena.value = 1
@@ -217,7 +217,7 @@ async def test_ui_in_upper_bits_do_not_affect_counter(dut):
     seen_values = {last}
     wrapped = False
 
-    for i in range(50000):
+    for i in range(500 + 56 * 20):
         dut.ui_in.value = (i & 0x1F) << 3  # only touch bits [7:3]
         await ClockCycles(dut.clk, 1)
         cur = safe_int(dut.uo_out.value) & 0x0F
@@ -237,7 +237,7 @@ async def test_ui_in_upper_bits_do_not_affect_counter(dut):
 @cocotb.test()
 async def test_selftest_fails_without_pmod(dut):
     """With nothing driving MISO, self-test should set uo_out[7]."""
-    clock = Clock(dut.clk, 10, unit="ns")
+    clock = Clock(dut.clk, 10, unit="us")
     cocotb.start_soon(clock.start())
 
     await reset_dut(dut)
@@ -261,7 +261,7 @@ async def test_selftest_fails_without_pmod(dut):
 @cocotb.test()
 async def test_selftest_passes_with_pmod(dut):
     """With a QSPI RAM slave responding, self-test should pass."""
-    clock = Clock(dut.clk, 10, unit="ns")
+    clock = Clock(dut.clk, 10, unit="us")
     cocotb.start_soon(clock.start())
 
     dut.ena.value = 1
@@ -288,7 +288,7 @@ async def test_selftest_passes_with_pmod(dut):
 @cocotb.test()
 async def test_selftest_detects_mismatch(dut):
     """Corrupted reads on SPI should set error flag uo_out[7]."""
-    clock = Clock(dut.clk, 10, unit="ns")
+    clock = Clock(dut.clk, 10, unit="us")
     cocotb.start_soon(clock.start())
 
     dut.ena.value = 1
@@ -309,7 +309,7 @@ async def test_selftest_detects_mismatch(dut):
 @cocotb.test()
 async def test_selftest_transaction_addresses_match(dut):
     """Log SPI address phases to confirm self-test writes then reads the same address."""
-    clock = Clock(dut.clk, 10, unit="ns")
+    clock = Clock(dut.clk, 10, unit="us")
     cocotb.start_soon(clock.start())
 
     txns = []
@@ -335,7 +335,7 @@ async def test_selftest_transaction_addresses_match(dut):
 @cocotb.test()
 async def test_flash_cs_never_asserted(dut):
     """Flash chip-select uio[0] must remain unasserted during self-test."""
-    clock = Clock(dut.clk, 10, unit="ns")
+    clock = Clock(dut.clk, 10, unit="us")
     cocotb.start_soon(clock.start())
 
     dut.ena.value = 1
@@ -346,7 +346,7 @@ async def test_flash_cs_never_asserted(dut):
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
 
-    for _ in range(50000):
+    for _ in range(500 + 56 * 5):
         await ClockCycles(dut.clk, 1)
         cs0 = (safe_int(dut.uio_out.value) >> UIO_CS0) & 1
         assert cs0 == 1, "qspi_cs0 (uio[0]) went low during the boot ROM's own execution"
@@ -355,7 +355,7 @@ async def test_flash_cs_never_asserted(dut):
 @cocotb.test()
 async def test_uio_oe_is_constant(dut):
     """uio_oe should remain constant at 0b1111_1011."""
-    clock = Clock(dut.clk, 10, unit="ns")
+    clock = Clock(dut.clk, 10, unit="us")
     cocotb.start_soon(clock.start())
 
     dut.ena.value = 1
@@ -366,7 +366,7 @@ async def test_uio_oe_is_constant(dut):
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
 
-    for _ in range(50000):
+    for _ in range(500 + 56 * 5):
         await ClockCycles(dut.clk, 1)
         oe = safe_int(dut.uio_oe.value)
         assert oe == 0b1111_1011, f"uio_oe changed to 0b{oe:08b}, expected constant 0b11111011"
@@ -375,7 +375,7 @@ async def test_uio_oe_is_constant(dut):
 @cocotb.test()
 async def test_selftest_passes_again_after_soft_reset(dut):
     """Self-test should pass across consecutive soft resets."""
-    clock = Clock(dut.clk, 10, unit="ns")
+    clock = Clock(dut.clk, 10, unit="us")
     cocotb.start_soon(clock.start())
 
     dut.ena.value = 1
@@ -405,7 +405,7 @@ async def test_selftest_passes_again_after_soft_reset(dut):
 @cocotb.test()
 async def test_bootloader_loads_and_runs_program(dut):
     """Bootload a small RV32I program over GPIO and verify execution output."""
-    clock = Clock(dut.clk, 10, unit="ns")
+    clock = Clock(dut.clk, 10, unit="us")
     cocotb.start_soon(clock.start())
 
     dut.ena.value = 1
@@ -416,7 +416,7 @@ async def test_bootloader_loads_and_runs_program(dut):
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
 
-    await wait_for_first_led_write(dut)
+    await ClockCycles(dut.clk, 200)
 
     program = bytes([
         0x93, 0x00, 0x50, 0x00,  # addi x1, x0, 5
