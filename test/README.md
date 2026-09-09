@@ -34,12 +34,14 @@ This will generate `tb.vcd` instead of `tb.fst`.
 
 ## Additional standalone testbenches
 
-Seven extra testbenches cover the QSPI external-memory addition, the
+Nine extra testbenches cover the QSPI external-memory addition, the
 reprogrammable boot ROM (self-test + demo/listen loop + bootloader),
 the FLASH_MODE handoff to external flash, FLASH_PAGE bank-switched
-flash execution, and a real ST7789 LCD driver built on top of it.
-They're plain Icarus testbenches, not cocotb, so they don't run as
-part of `make` above -- run them together with:
+flash execution, a real ST7789 LCD driver built on top of it, and a
+PS/2 keyboard reader (raw scancodes, then scancode-to-ASCII
+translation) built the same way. They're plain Icarus testbenches, not
+cocotb, so they don't run as part of `make` above -- run them together
+with:
 
 ```sh
 make standalone-tests
@@ -80,6 +82,29 @@ iverilog -g2012 -I ../src -o /tmp/tb6.vvp ../src/tt_um_pineapple_one.v ../src/rv
 # it against st7789_expected_seq.hex (regenerate that if the driver's init
 # sequence or FILL_COLOR/panel constants change)
 iverilog -g2012 -I ../src -o /tmp/tb7.vvp ../src/tt_um_pineapple_one.v ../src/rv32i_core.v ../src/mem.v ../src/qspi_shared_engine.v spi_ram_model.v tb_st7789_driver.v && vvp /tmp/tb7.vvp
+
+# PS/2 keyboard reader (tools/build_ps2_reader.py), a FLASH_PAGE
+# bank-switched state machine like the LCD driver above (one page per
+# protocol phase instead of one page per bit): drives ui_in[3]/ui_in[4]
+# with real bit-banged PS/2 frames (start/8 data bits LSB-first/odd
+# parity/stop) across several distinct scancodes and confirms GPIO_OUT
+# lands on each one in turn
+iverilog -g2012 -I ../src -o /tmp/tb8.vvp ../src/tt_um_pineapple_one.v ../src/rv32i_core.v ../src/mem.v ../src/qspi_shared_engine.v spi_ram_model.v tb_ps2_reader.v && vvp /tmp/tb8.vvp
+
+# PS/2 keyboard reader, Step 2: scancode -> ASCII translation
+# (tools/build_ps2_ascii.py). Reuses tb_ps2_reader.v's bootload/frame-
+# bit-banging tasks; checks GPIO_OUT against the TRANSLATED ASCII value
+# rather than the raw scancode, and specifically exercises: a plain
+# make code, a make+break pair (exactly one emit, the break itself
+# produces none), an extended (0xE0-prefixed) make+break pair (fully
+# consumed, no emit), an unmapped key (0x00), several plain keys back-
+# to-back (state machine keeps re-arming), and a scancode above
+# MAX_SAFE_SCANCODE -- proving the FLASH_PAGE 8-bit bounds check in
+# PROCESS_DISPATCH actually prevents the page-number wraparound bug it
+# exists for (an earlier version without it wrapped scancode 0xFF onto
+# EMIT_PAGE's own page number and re-emitted a stale ASCII value from
+# the previous real translation instead of 0x00)
+iverilog -g2012 -I ../src -o /tmp/tb9.vvp ../src/tt_um_pineapple_one.v ../src/rv32i_core.v ../src/mem.v ../src/qspi_shared_engine.v spi_ram_model.v tb_ps2_ascii.v && vvp /tmp/tb9.vvp
 ```
 
 None of these has been checked against a real flash/PSRAM chip or a

@@ -51,17 +51,17 @@ https://gds-viewer.tinytapeout.com/?model=https://alexandercoabad.github.io/Tiny
 - [x] **Hardened successfully on the real `ttihp26b` shuttle CI** at
       6x2 tiles, 59.3% utilization, clean DRC/precheck/gl_test (see
       `.github/workflows/gds.yaml` run history)
-- [x] Five test suites (see "Testing locally" below): on-chip cocotb
-      regression (self-test, demo counter, full bootload-and-run),
-      standalone self-test/bootload Icarus testbench, QSPI engine
-      bit-level protocol, external-window integration via direct bus
-      driving, and full CPU-driven external load/store — all wired
-      into CI (two separate steps), all gating the build. **Known
-      issue:** 2 of the 11 cocotb tests currently fail
-      (`test_selftest_passes_with_pmod`,
-      `test_selftest_passes_again_after_soft_reset`) -- traced to a
-      one-clock-cycle sampling lag in `test.py`'s Python QSPI slave
-      coroutine, not the design itself; see `test/README.md`.
+- [x] Ten test suites (see "Testing locally" below): on-chip cocotb
+      regression (self-test, demo counter, full bootload-and-run) plus
+      nine standalone Icarus testbenches -- QSPI engine bit-level
+      protocol, external-window integration via direct bus driving,
+      full CPU-driven external load/store, self-test/bootload,
+      `FLASH_MODE` handoff to external flash, `FLASH_PAGE`
+      bank-switched flash execution, a real ST7789 LCD driver built on
+      top of it, and a PS/2 keyboard reader (Step 1: raw scancodes;
+      Step 2: scancode-to-ASCII translation) -- all wired into CI (two
+      separate steps), all gating the build, all 11 cocotb tests + all
+      9 standalone tests currently passing.
 - [ ] Validate the external memory path against a real flash/PSRAM chip
       or a vendor-accurate behavioral model (currently only tested
       against a hand-written behavioral model, `test/spi_ram_model.v`)
@@ -84,14 +84,27 @@ tools/
   build_boot_rom.py       assembles the boot ROM (self-test + demo/listen loop + bootloader)
                           into src/boot_rom_body.vh -- run this and re-copy its output if you
                           change what the boot ROM itself does
+  asm_pineapple.py         small RV32I assembler (Asm) + PagedAsm, the FLASH_PAGE bank-switching
+                          helper every *_flash_image.py builder below shares
+  build_flash_handoff_stub.py  1-instruction stub bootloaded over ui_in to hand off into flash
+  build_flash_canary.py    tiny known-good flash program, for confirming the handoff mechanism alone
+  build_flash_pagetest.py  synthetic 4-page program exercising switch_to()/switch_to_computed()
+  build_st7789_flash_image.py  real ST7789 LCD driver, PagedAsm-based, bank-switched
+  build_ps2_reader.py      PS/2 keyboard reader, Step 1: raw scancode -> GPIO_OUT
+  build_ps2_ascii.py       PS/2 keyboard reader, Step 2: scancode -> ASCII translation
 test/
   tb.v, test.py           cocotb testbench: self-test pass/fail, demo counter, full bootload-and-run
   tb_check.v              standalone: same three scenarios as a single self-contained Icarus testbench
   tb_qspi_engine.v        standalone: QSPI engine bit-level protocol + byte-order check
-  spi_ram_model.v         behavioral single-line SPI RAM model, for the tests below
+  spi_ram_model.v         behavioral single-line SPI RAM model (flash CS0 and PSRAM CS1), for the tests below
   tb_mem_ext.v            standalone: external window via direct bus driving + real engine + spi_ram_model
   mem_extmem_test.v       copy of mem.v with a test program in place of the boot ROM
   tb_core_ext.v           standalone: the real CPU running that test program against the external window
+  tb_flash_handoff.v      standalone: bootloaded stub hands off into a small flash-resident program
+  tb_flash_paging.v       standalone: FLASH_PAGE bank-switching across a synthetic multi-page program
+  tb_st7789_driver.v      standalone: the real ST7789 driver, byte stream reconstructed and checked
+  tb_ps2_reader.v         standalone: raw PS/2 frames -> GPIO_OUT (Step 1)
+  tb_ps2_ascii.v          standalone: PS/2 frames -> translated ASCII on GPIO_OUT (Step 2)
 info.yaml                 Tiny Tapeout project metadata (title, pinout, tiles...)
 docs/info.md              project datasheet shown on the Tiny Tapeout site
 ```
@@ -114,7 +127,8 @@ retapeout needed. Full protocol, address map, pinout, and the
 cd test
 pip install -r requirements.txt
 make                    # cocotb: self-test, demo counter, full bootload-and-run
-make standalone-tests   # QSPI engine + external-window + full-CPU + self-test/bootload tests
+make standalone-tests   # QSPI engine, external-window, full-CPU, self-test/bootload, FLASH_MODE
+                         # handoff, FLASH_PAGE bank-switching, ST7789 driver, and PS/2 reader/ASCII tests
 ```
 
 Both targets are also run automatically by `.github/workflows/test.yaml`

@@ -17,16 +17,17 @@ module spi_ram_model (
     output reg  miso
 );
 
-    // 13-bit addressing (8192 bytes) -- comfortably covers real flash
-    // images built through PagedAsm (e.g. the ST7789 driver's ~7.3KB
-    // simulation-sized image), not just the small hand-written test
-    // programs the original 256-byte model was sized for. Only the
-    // low bits of `addr` actually get indexed either way (real flash
-    // chips are much bigger than either size), so widening this is a
-    // pure capacity change, not a protocol change.
-    reg [7:0] mem [0:8191];
+    // 14-bit addressing (16384 bytes) -- comfortably covers real flash
+    // images built through PagedAsm (e.g. the PS/2 ASCII translation
+    // table's ~12.3KB image, or the ST7789 driver's ~7.3KB simulation-
+    // sized image), not just the small hand-written test programs the
+    // original 256-byte model was sized for. Only the low bits of
+    // `addr` actually get indexed either way (real flash chips are
+    // much bigger than either size), so widening this is a pure
+    // capacity change, not a protocol change.
+    reg [7:0] mem [0:16383];
     integer i;
-    initial for (i = 0; i < 8192; i = i + 1) mem[i] = 8'h00;
+    initial for (i = 0; i < 16384; i = i + 1) mem[i] = 8'h00;
 
     reg [2:0]  bitcnt;
     reg [1:0]  phase;      // 0=cmd, 1=addr, 2=data
@@ -69,14 +70,14 @@ module spi_ram_model (
                         addr <= next_addr;
                         if (addr_byte == 2'd2) begin
                             phase   <= PHASE_DATA;
-                            cur_out <= mem[next_addr[12:0]]; // low 13 bits of the address just formed
+                            cur_out <= mem[next_addr[13:0]]; // low 14 bits of the address just formed
                         end
                         addr_byte <= addr_byte + 2'd1;
                     end
                     default: begin // PHASE_DATA
-                        if (we) mem[addr[12:0]] <= {shift_in[6:0], mosi};
+                        if (we) mem[addr[13:0]] <= {shift_in[6:0], mosi};
                         addr    <= addr + 24'd1;
-                        cur_out <= mem[addr[12:0] + 13'd1];
+                        cur_out <= mem[addr[13:0] + 14'd1];
                     end
                 endcase
             end else begin

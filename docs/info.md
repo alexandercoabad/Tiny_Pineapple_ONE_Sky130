@@ -221,6 +221,112 @@ not the flash image itself. See that file's own docstring for the full
 design, and `tools/asm_pineapple.py` for the small RV32I assembler both
 this and the boot ROM builder share.
 
+#### Reading a PS/2 keyboard from flash
+
+`tools/build_ps2_reader.py` assembles a small PS/2 keyboard receiver,
+built the same way as the ST7789 driver above (a `PagedAsm` program
+reached via the same flash-handoff stub), meant to be pre-programmed
+onto the external flash chip and to run alongside or instead of the
+LCD driver. `ui_in[7:3]` are free for whatever gets bootloaded (see
+"How to test" below), and PS/2 needs only two of them: `ui_in[3]` =
+CLOCK, `ui_in[4]` = DATA, both keyboard-driven and idle high. No
+wiring changes to the chip itself -- this is a firmware addition, not
+an RTL one.
+
+Where the LCD driver's `PagedAsm` program is organized one page per
+*bit* (every byte it sends is a compile-time constant, so each bit's
+SPI pulse fits its own page), this driver is organized one page per
+protocol *phase* instead: wait for CLOCK to fall, sample DATA, wait
+for CLOCK to rise, repeated across the 11 bits of a PS/2 frame (start
+bit, 8 data bits LSB-first, parity, stop). Like the LCD driver, each
+data bit's destination position in the result byte is a compile-time
+constant (`1<<n`, OR'd into an accumulator register that -- like the
+LCD driver's pixel counter -- survives `FLASH_PAGE` switches just
+fine, since paging only changes what gets *fetched*, not the CPU's own
+registers), so no runtime shift register is needed on the way in
+either. The accumulated scancode is written to `GPIO_OUT` (`uo_out`)
+once a full frame has been received, then the whole thing loops back
+to wait for the next one -- this core has no interrupts (see above),
+so watching for a keypress is exactly this kind of explicit polling
+loop, not something that can happen "in the background" of anything
+else the chip might also be doing.
+
+The parity and stop bits' clock edges are waited through (to stay in
+frame sync) but their *values* aren't checked -- this is Step 1
+("prove the mechanism", per the project's own scoping notes), not a
+fully spec-compliant PS/2 host with parity-error recovery. Verified in
+`test/tb_ps2_reader.v`, which bit-bangs several distinct real 11-bit
+PS/2 frames at `ui_in[3]`/`ui_in[4]` (the same shape a real keyboard's
+transmission would take, including odd parity) and confirms `uo_out`
+lands on each scancode sent -- including after the first frame, to
+confirm the state machine re-arms itself correctly rather than only
+working once.
+
+#### Step 2: scancode -> ASCII translation
+
+`tools/build_ps2_ascii.py` builds on Step 1 (its receive state machine
+is duplicated byte-for-byte, same register conventions -- there's no
+mechanism to splice two `PagedAsm` scripts' pages together, so each
+`*_flash_image.py` file in this project is self-contained) and replaces
+Step 1's "just echo whatever byte was received" with real Scan Code
+Set 2 framing awareness plus an ASCII lookup, so a genuine keypress on
+a real keyboard shows up on `uo_out` as the letter typed, not a raw
+scancode.
+
+Scan Code Set 2 -- what essentially every PS/2 keyboard speaks -- frames
+key *events*, not key *identities*: a plain byte is a make code (key
+pressed), `0xF0` followed by that byte is a break code (key released),
+and either can be preceded by `0xE0` for an extended key (arrows,
+right-Ctrl, etc). Two persistent flag registers (surviving `FLASH_PAGE`
+switches exactly like the accumulator already does) track break/
+extended state across frames, so a key release or an extended key's own
+code correctly produces **no** `GPIO_OUT` write at all, rather than Step
+1's "every received byte, including `0xF0` itself and the released
+key's code right after it, gets echoed" behavior. Only a genuine plain
+make code gets translated and emitted. Shift and CapsLock state aren't
+tracked (later-step scope, same philosophy as Step 1's parity/stop-bit
+values) -- every letter and shifted-symbol key maps to its unshifted
+form regardless of what's held down, and modifier keys themselves have
+no table entry (translate to `0x00`, same as any other unmapped key:
+function keys, Escape, arrows, etc).
+
+The lookup itself has an unusual implementation forced by this chip's
+constraints: there's no runtime-addressable byte array to put a
+256-entry table into (on-chip RAM is 4 bytes once flash execution owns
+the loadable window), and indexing directly into flash at an arbitrary
+computed byte offset isn't something `FLASH_PAGE` supports -- it only
+selects which fixed-size *page* is mapped in, not a byte offset within
+one. So the table IS the page layout: `switch_to_computed()` (see
+`asm_pineapple.py`) jumps to page number `TABLE_START + scancode`, one
+of a couple hundred tiny generated pages that each do nothing but load
+a constant ASCII value and switch to a shared "emit" page -- the
+"lookup" is which page execution lands on, the same mechanism the
+ST7789 driver's fill-ring control page already uses for a
+runtime-computed pixel-loop target, reused here for keyboard input
+instead.
+
+That table has a hard ceiling worth knowing about if you extend it:
+`FLASH_PAGE` (`0xFC`) is 8 bits, so `TABLE_START + scancode` can only
+safely address scancodes up to `255 - TABLE_START` before it would
+overflow -- and the write *wraps*, silently landing on whatever
+unrelated page that wrapped number happens to name, rather than
+saturating or faulting. `PROCESS_DISPATCH` bounds-checks against this
+before computing the target and safely redirects anything over the
+limit to the always-`0x00` page instead. This was a real bug caught
+only by actually simulating a scancode in that range (`0xFF` happened
+to wrap onto the shared emit page's own number and silently re-emitted
+whatever stale ASCII value was left over from the *previous* real
+keypress) -- worth remembering if you add table entries and the ceiling
+ever needs to move.
+
+Verified in `test/tb_ps2_ascii.v`: a plain make code, a make+break pair
+of the same key (exactly one emit, the break itself produces none), an
+extended make+break pair (fully consumed, no emit at all), an unmapped
+key (`0x00`), several plain keys back-to-back (confirming the flags
+don't get stuck set), and a scancode past the safe-dispatch ceiling
+(confirming the bounds check above actually prevents the wraparound bug
+it exists for, not just untested code that happens to look right).
+
 ## How to test
 
 Power up the chip (or run the testbench) and watch `uo_out[3:0]`
@@ -240,7 +346,7 @@ gets bootloaded into it), edit `tools/build_boot_rom.py` and re-run it
 to regenerate `src/boot_rom_body.vh`, which `src/mem.v` `` `include``s
 directly -- don't hand-edit that file.
 
-Eight test suites cover different parts of this design (see `test/`):
+Nine test suites cover different parts of this design (see `test/`):
 `test.py` (cocotb) drives the real top-level module end-to-end --
 self-test pass/fail with and without a simulated QSPI slave, the demo
 counter, and a full bootload-and-run of a small program; `tb_check.v`
@@ -265,12 +371,16 @@ why flash byte 0 is dead" above for what this caught; `tb_flash_paging.v`
 bootloads the same stub, then walks a hand-built 4-page flash image
 through both `switch_to()` and `switch_to_computed()`, confirming
 `GPIO_OUT` visits every page's distinct value in the right order,
-including a self-loop; and `tb_st7789_driver.v` runs the real
+including a self-loop; `tb_st7789_driver.v` runs the real
 `PagedAsm`-based ST7789 driver against a simulation-scaled panel and
 reconstructs the actual bit-banged SPI byte stream to check it against
 the exact expected init sequence -- see "Driving an ST7789 display
 from flash" above for what this caught (a flat, non-paged version of
-this same driver that silently ran off the end of the flash window).
+this same driver that silently ran off the end of the flash window);
+and `tb_ps2_reader.v` bit-bangs several real 11-bit PS/2 frames at the
+`PagedAsm`-based keyboard reader and confirms `GPIO_OUT` lands on each
+scancode sent, across multiple frames in a row -- see "Reading a PS/2
+keyboard from flash" above.
 
 **Known limitation:** the external RAM/flash windows have only been
 validated against the behavioral model in `spi_ram_model.v`, not a real
@@ -286,7 +396,10 @@ few switches/buttons for manual testing) to drive the bootloader
 handshake, and `ui_in[7:3]` are free for whatever you bootload. Once a
 bootloaded program takes over `uo_out` for its own purposes (e.g. the
 ST7789 driver above, which bit-bangs SPI over `uo_out[0:3]`), it no
-longer reflects the demo counter or self-test result.
+longer reflects the demo counter or self-test result. A PS/2 keyboard
+can be wired to `ui_in[3]` (CLOCK) and `ui_in[4]` (DATA) for the
+reader described above -- both idle high, both driven by the
+keyboard, nothing else on the chip needs to change.
 
 `uio[0:7]` are wired to the
 [Tiny Tapeout QSPI Pmod](https://github.com/mole99/qspi-pmod) pinout:

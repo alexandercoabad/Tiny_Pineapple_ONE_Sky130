@@ -66,4 +66,8 @@ standalone-tests:
 	vvp /tmp/tt_tb_flash_paging.vvp | tee /tmp/tt_out_flash_paging.log
 	iverilog -g2012 -I $(SRC_DIR) -o /tmp/tt_tb_st7789_driver.vvp $(SRC_DIR)/tt_um_pineapple_one.v $(SRC_DIR)/rv32i_core.v $(SRC_DIR)/mem.v $(SRC_DIR)/qspi_shared_engine.v spi_ram_model.v tb_st7789_driver.v
 	vvp /tmp/tt_tb_st7789_driver.vvp | tee /tmp/tt_out_st7789_driver.log
+	iverilog -g2012 -I $(SRC_DIR) -o /tmp/tt_tb_ps2_reader.vvp $(SRC_DIR)/tt_um_pineapple_one.v $(SRC_DIR)/rv32i_core.v $(SRC_DIR)/mem.v $(SRC_DIR)/qspi_shared_engine.v spi_ram_model.v tb_ps2_reader.v
+	vvp /tmp/tt_tb_ps2_reader.vvp | tee /tmp/tt_out_ps2_reader.log
+	iverilog -g2012 -I $(SRC_DIR) -o /tmp/tt_tb_ps2_ascii.vvp $(SRC_DIR)/tt_um_pineapple_one.v $(SRC_DIR)/rv32i_core.v $(SRC_DIR)/mem.v $(SRC_DIR)/qspi_shared_engine.v spi_ram_model.v tb_ps2_ascii.v
+	vvp /tmp/tt_tb_ps2_ascii.vvp | tee /tmp/tt_out_ps2_ascii.log
 	@! grep -l "FAIL" /tmp/tt_out_*.log

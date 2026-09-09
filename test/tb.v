@@ -23,7 +23,20 @@ module tb ();
   wire [7:0] uio_out;
   wire [7:0] uio_oe;
 
+`ifdef GL_TEST
+  // Gate-level sims are built with -DUSE_POWER_PINS, so the synthesized
+  // sky130_fd_sc_hd cells inside user_project have real VPWR/VGND ports
+  // that need to be tied off -- without this the whole netlist floats
+  // and every output reads as stuck/dead, RTL-correct or not.
+  wire VPWR = 1'b1;
+  wire VGND = 1'b0;
+`endif
+
   tt_um_pineapple_one user_project (
+`ifdef GL_TEST
+      .VPWR(VPWR),
+      .VGND(VGND),
+`endif
       .ui_in  (ui_in),    // Dedicated inputs
       .uo_out (uo_out),   // Dedicated outputs
       .uio_in (uio_in),   // IOs: Input path
