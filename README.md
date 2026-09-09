@@ -22,9 +22,10 @@ anyone who wants more headroom than the on-chip memory alone gives.
 
 ## Layout
 
-<img width="1321" height="346" alt="Screenshot 2026-09-08 at 5 24 21 PM" src="https://github.com/user-attachments/assets/7eefc661-9beb-4ecb-97c1-ce1736b87f9d" />
+<img width="1305" height="297" alt="Screenshot 2026-09-09 at 7 54 46 PM" src="https://github.com/user-attachments/assets/6945c66d-a44e-43ee-a7ae-b8bbbedcb1e7" />
 
-https://gds-viewer.tinytapeout.com/?model=https://alexandercoabad.github.io/Tiny_Pineapple_ONE_IHP/tinytapeout.oas&pdk=ihp-sg13g2
+
+https://gds-viewer.tinytapeout.com/?model=https://alexandercoabad.github.io/Tiny_Pineapple_ONE_Sky130/tinytapeout.oas&pdk=sky130A
 
 
 
